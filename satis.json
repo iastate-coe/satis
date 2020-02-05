@@ -1,0 +1,24 @@
+{
+    "name": "iastate/packages",
+    "homepage": "https://html.engineering.iastate.edu/composer/",
+    "repositories": [
+        {
+            "type": "git",
+            "url": "ssh://git@git.its.iastate.edu:7999/iastate-theme/php.git"
+        },
+        {
+            "type": "git",
+            "url": "ssh://git@git.its.iastate.edu:7999/engr-web/iastate-theme-twig-bundle.git"
+        },
+        {
+            "type": "git",
+            "url": "ssh://git@git.its.iastate.edu:7999/engr-web/isu-semester-guesser.git"
+        }
+    ],
+    "require": {
+        "iastate-theme/php": "^2.0",
+        "iastate-theme/twig-bundle": "*",
+        "kwickham/isu-semester-guesser": "*"
+    },
+    "require-all": false
+}
