@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 /*
  * This file is part of composer/satis.
  *
@@ -24,7 +26,7 @@ class ArchiveBuilderHelperTest extends TestCase
     /** @var NullOutput */
     protected $output;
 
-    public function setUp()
+    public function setUp(): void
     {
         $this->output = new NullOutput();
     }
@@ -51,7 +53,7 @@ class ArchiveBuilderHelperTest extends TestCase
     /**
      * @dataProvider dataDirectories
      */
-    public function testDirectoryConfig($expected, $outputDir, $config)
+    public function testDirectoryConfig(string $expected, string $outputDir, array $config)
     {
         $helper = new ArchiveBuilderHelper($this->output, $config);
         $this->assertEquals($helper->getDirectory($outputDir), $expected);
@@ -122,7 +124,7 @@ class ArchiveBuilderHelperTest extends TestCase
     /**
      * @dataProvider dataPackages
      */
-    public function testSkipDump($expected, $package, $config)
+    public function testSkipDump(bool $expected, Package $package, array $config)
     {
         $helper = new ArchiveBuilderHelper($this->output, $config);
         $this->assertEquals($helper->isSkippable($package), $expected);

@@ -1,9 +1,14 @@
+# ignore everything
 *
+
+# unignored directories
 !bin
-!docs
 !res
-!src
 !views
+!src
+
+# unignored files
 !composer.json
 !composer.lock
 !LICENSE
+!php-cli.ini

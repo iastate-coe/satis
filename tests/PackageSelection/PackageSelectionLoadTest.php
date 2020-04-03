@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 /*
  * This file is part of composer/satis.
  *
@@ -37,7 +39,7 @@ class PackageSelectionLoadTest extends TestCase
     /** @var vfsStreamDirectory */
     protected $root;
 
-    protected function setUp()
+    protected function setUp(): void
     {
         static $extra = [
             'branch-alias' => [
@@ -60,7 +62,7 @@ class PackageSelectionLoadTest extends TestCase
         $this->selection->setPackagesFilter(['vendor/name']);
     }
 
-    protected function setFileSystem()
+    protected function setFileSystem(): vfsStreamDirectory
     {
         vfsStreamWrapper::register();
         $root = vfsStream::newDirectory('build');

@@ -3,12 +3,13 @@
 Simple static Composer repository generator.
 
 [![Build Status](https://travis-ci.org/composer/satis.svg?branch=master)](https://travis-ci.org/composer/satis)
+[![codecov](https://codecov.io/gh/composer/satis/branch/master/graph/badge.svg)](https://codecov.io/gh/composer/satis)
 
 
 ## Run from source
 
-- Install satis: `composer create-project composer/satis:dev-master --keep-vcs`
-- Build a repository: `php bin/satis build <configuration-file> <output-dir>`
+- Install satis: `composer create-project composer/satis:dev-master`
+- Build a repository: `php bin/satis build <configuration-file> <output-directory>`
 
 Read the more detailed instructions in the [documentation][].
 
@@ -21,27 +22,21 @@ Pull the image:
 docker pull composer/satis
 ```
 
-Run the image:
-
-``` sh
-docker run --rm -it -v /build:/build composer/satis
-```
-
- > Note: by default it will look for a configuration file named `satis.json`
-    inside the `/build` directory and dump the generated output files in
-    `/build/output`.
-
 Run the image (with Composer cache from host):
 
 ``` sh
-docker run --rm -it -v /build:/build -v $COMPOSER_HOME:/composer composer/satis
+docker run --rm --init -it \
+  --user $(id -u):$(id -g) \
+  --volume $(pwd):/build \
+  --volume "${COMPOSER_HOME:-$HOME/.composer}:/composer" \
+  composer/satis build <configuration-file> <output-directory>
 ```
 
 If you want to run the image without implicitly running Satis, you have to
 override the entrypoint specified in the `Dockerfile`:
 
 ``` sh
-docker run --rm -it --entrypoint /bin/sh composer/satis
+--entrypoint /bin/sh
 ```
 
 
@@ -60,7 +55,7 @@ php bin/satis purge <configuration-file> <output-dir>
 
 ## Updating
 
-Updating Satis is as simple as running `git pull && composer update` in the
+Updating Satis is as simple as running `git pull && composer install` in the
 Satis directory.
 
 If you are running Satis as a Docker container, simply pull the latest image.
@@ -89,6 +84,9 @@ See the list of [contributors][] who participate(d) in this project.
 - [composer-satis-builder][] - Simple tool for updating the Satis configuration
     (satis.json) "require" key on the basis of the project composer.json.
 
+## Examples
+
+- [eventum/composer] - A simple static set of packages hosted in GitHub Pages
 
 ## License
 
@@ -103,3 +101,4 @@ Satis is licensed under the MIT License - see the [LICENSE][] file for details
 [satis-control-panel]: https://github.com/realshadow/satis-control-panel
 [composer-satis-builder]: https://github.com/AOEpeople/composer-satis-builder
 [LICENSE]: https://github.com/composer/satis/blob/master/LICENSE
+[eventum/composer]: https://github.com/eventum/composer
