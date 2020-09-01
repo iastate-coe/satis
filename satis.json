@@ -13,12 +13,17 @@
         {
             "type": "git",
             "url": "ssh://git@git.its.iastate.edu:7999/engr-web/isu-semester-guesser.git"
+        },
+        {
+            "type": "git",
+            "url": "ssh://git@git.its.iastate.edu:7999/engr-web/iastateaccountbundle.git"
         }
     ],
     "require": {
-        "iastate-theme/php": "^2.0",
-        "iastate-theme/twig-bundle": "*",
-        "kwickham/isu-semester-guesser": "*"
+        "iastate-theme/php": ">=2.0.1",
+        "iastate-theme/twig-bundle": ">0.1",
+        "kwickham/isu-semester-guesser": ">=1",
+        "iastate/account-bundle": ">=1"
     },
     "require-all": false
 }
