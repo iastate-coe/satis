@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 /*
  * This file is part of composer/satis.
  *
@@ -12,46 +14,36 @@
 namespace Composer\Satis\Builder;
 
 use Composer\Json\JsonFile;
+use Composer\MetadataMinifier\MetadataMinifier;
 use Composer\Package\Dumper\ArrayDumper;
+use Composer\Package\PackageInterface;
+use Composer\Semver\VersionParser;
 use Symfony\Component\Console\Output\OutputInterface;
 
-/**
- * Builds the JSON files.
- *
- * @author James Hautot <james@rezo.net>
- */
 class PackagesBuilder extends Builder
 {
     /** @var string packages.json file name. */
     private $filename;
-
     /** @var string included json filename template */
     private $includeFileName;
-
+    /** @var array */
     private $writtenIncludeJsons = [];
+    /** @var bool */
+    private $minify;
 
-    /**
-     * Dedicated Packages Constructor.
-     *
-     * @param OutputInterface $output     The output Interface
-     * @param string          $outputDir  The directory where to build
-     * @param array           $config     The parameters from ./satis.json
-     * @param bool            $skipErrors Escapes Exceptions if true
-     */
-    public function __construct(OutputInterface $output, $outputDir, $config, $skipErrors)
+    public function __construct(OutputInterface $output, string $outputDir, array $config, bool $skipErrors, bool $minify = false)
     {
         parent::__construct($output, $outputDir, $config, $skipErrors);
 
         $this->filename = $this->outputDir . '/packages.json';
         $this->includeFileName = $config['include-filename'] ?? 'include/all$%hash%.json';
+        $this->minify = $minify;
     }
 
     /**
-     * Builds the JSON stuff of the repository.
-     *
-     * @param \Composer\Package\PackageInterface[] $packages List of packages to dump
+     * @param PackageInterface[] $packages List of packages to dump
      */
-    public function dump(array $packages)
+    public function dump(array $packages): void
     {
         $packagesByName = [];
         $dumper = new ArrayDumper();
@@ -59,6 +51,7 @@ class PackagesBuilder extends Builder
             $packagesByName[$package->getName()][$package->getPrettyVersion()] = $dumper->dump($package);
         }
 
+        // Composer 1.0 format
         $repo = ['packages' => []];
         if (isset($this->config['providers']) && $this->config['providers']) {
             $providersUrl = 'p/%package%$%hash%.json';
@@ -90,20 +83,50 @@ class PackagesBuilder extends Builder
             $repo['includes'] = $this->dumpPackageIncludeJson($packagesByName, $this->includeFileName);
         }
 
+        // Composer 2.0 format
+        $metadataUrl = 'p2/%package%.json';
+        if (!empty($this->config['homepage'])) {
+            $repo['metadata-url'] = parse_url(rtrim($this->config['homepage'], '/'), PHP_URL_PATH) . '/' . $metadataUrl;
+        } else {
+            $repo['metadata-url'] = $metadataUrl;
+        }
+
+        if (!empty($this->config['available-package-patterns'])) {
+            $repo['available-package-patterns'] = $this->config['available-package-patterns'];
+        } else {
+            $repo['available-packages'] = array_keys($packagesByName);
+        }
+
+        foreach ($packagesByName as $packageName => $versionPackages) {
+            $stableVersions = [];
+            $devVersions = [];
+            foreach ($versionPackages as $version => $versionConfig) {
+                if ('dev' === VersionParser::parseStability($versionConfig['version'])) {
+                    $devVersions[] = $versionConfig;
+                } else {
+                    $stableVersions[] = $versionConfig;
+                }
+            }
+
+            // Stable versions
+            $this->dumpPackageIncludeJson(
+                [$packageName => $this->minify ? MetadataMinifier::minify($stableVersions) : $stableVersions],
+                str_replace('%package%', $packageName, $metadataUrl)
+            );
+
+            // Dev versions
+            $this->dumpPackageIncludeJson(
+                [$packageName => $this->minify ? MetadataMinifier::minify($devVersions) : $devVersions],
+                str_replace('%package%', $packageName.'~dev', $metadataUrl)
+            );
+        }
+
         $this->dumpPackagesJson($repo);
 
         $this->pruneIncludeDirectories();
     }
 
-    /**
-     * Find packages replacing the $replaced packages
-     *
-     * @param array $packages
-     * @param string $replaced
-     *
-     * @return array
-     */
-    private function findReplacements($packages, $replaced)
+    private function findReplacements(array $packages, string $replaced): array
     {
         $replacements = [];
         foreach ($packages as $packageName => $packageConfig) {
@@ -118,10 +141,7 @@ class PackagesBuilder extends Builder
         return $replacements;
     }
 
-    /**
-     * Remove all files matching the includeUrl pattern next to just created include jsons
-     */
-    private function pruneIncludeDirectories()
+    private function pruneIncludeDirectories(): void
     {
         $this->output->writeln('<info>Pruning include directories</info>');
         $paths = [];
@@ -181,23 +201,18 @@ class PackagesBuilder extends Builder
         }
     }
 
-    /**
-     * Writes includes JSON Files.
-     *
-     * @param array $packages List of packages to dump
-     * @param string $includesUrl The includes url (optionally containing %hash%)
-     * @param string $hashAlgorithm Hash algorithm {@see hash()}
-     *
-     * @return array The object for includes key in packages.json
-     */
-    private function dumpPackageIncludeJson(array $packages, $includesUrl, $hashAlgorithm = 'sha1')
+    private function dumpPackageIncludeJson(array $packages, string $includesUrl, string $hashAlgorithm = 'sha1'): array
     {
         $filename = str_replace('%hash%', 'prep', $includesUrl);
         $path = $tmpPath = $this->outputDir . '/' . ltrim($filename, '/');
 
         $repoJson = new JsonFile($path);
-        $contents = $repoJson->encode(['packages' => $packages]) . "\n";
+        $options = JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES;
+        if ($this->config['pretty-print'] ?? true) {
+            $options |= JSON_PRETTY_PRINT;
+        }
 
+        $contents = $repoJson->encode(['packages' => $packages], $options) . "\n";
         $hash = hash($hashAlgorithm, $contents);
 
         if (false !== strpos($includesUrl, '%hash%')) {
@@ -209,9 +224,10 @@ class PackagesBuilder extends Builder
                 $path = null;
             }
         }
+
         if ($path) {
             $this->writeToFile($path, $contents);
-            $this->output->writeln("<info>wrote packages to $path</info>");
+            $this->output->writeln("<info>Wrote packages to $path</info>");
         }
 
         return [
@@ -220,27 +236,23 @@ class PackagesBuilder extends Builder
     }
 
     /**
-     * Write to a file
-     *
-     * @param string $path
-     * @param string $contents
-     *
      * @throws \UnexpectedValueException
      * @throws \Exception
      */
-    private function writeToFile($path, $contents)
+    private function writeToFile(string $path, string $contents): void
     {
+        if (file_exists($path) && sha1_file($path) === sha1($contents)) {
+            // The file already contains the expected contents.
+            return;
+        }
+
         $dir = dirname($path);
         if (!is_dir($dir)) {
             if (file_exists($dir)) {
-                throw new \UnexpectedValueException(
-                    $dir . ' exists and is not a directory.'
-                );
+                throw new \UnexpectedValueException($dir . ' exists and is not a directory.');
             }
             if (!@mkdir($dir, 0777, true)) {
-                throw new \UnexpectedValueException(
-                    $dir . ' does not exist and could not be created.'
-                );
+                throw new \UnexpectedValueException($dir . ' does not exist and could not be created.');
             }
         }
 
@@ -261,11 +273,9 @@ class PackagesBuilder extends Builder
     }
 
     /**
-     * Writes the packages.json of the repository.
-     *
      * @param array $repo Repository information
      */
-    private function dumpPackagesJson($repo)
+    private function dumpPackagesJson(array $repo): void
     {
         if (isset($this->config['notify-batch'])) {
             $repo['notify-batch'] = $this->config['notify-batch'];

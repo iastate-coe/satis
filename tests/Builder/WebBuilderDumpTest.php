@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 /*
  * This file is part of composer/satis.
  *
@@ -15,8 +17,10 @@ use Composer\Package\CompletePackage;
 use Composer\Package\Link;
 use Composer\Package\RootPackage;
 use Composer\Satis\Builder\WebBuilder;
+use Composer\Semver\Constraint\MatchAllConstraint;
 use org\bovigo\vfs\vfsStream;
 use org\bovigo\vfs\vfsStreamDirectory;
+use org\bovigo\vfs\vfsStreamFile;
 use org\bovigo\vfs\vfsStreamWrapper;
 use PHPUnit\Framework\TestCase;
 use Symfony\Component\Console\Output\NullOutput;
@@ -35,16 +39,16 @@ class WebBuilderDumpTest extends TestCase
     /** @var vfsStreamDirectory */
     protected $root;
 
-    protected function setUp()
+    protected function setUp(): void
     {
-        $this->rootPackage = new RootPackage('dummy root package', 0, 0);
+        $this->rootPackage = new RootPackage('dummy root package', '0', '0');
 
         $this->package = new CompletePackage('vendor/name', '1.0.0.0', '1.0');
 
         $this->root = $this->setFileSystem();
     }
 
-    protected function setFileSystem()
+    protected function setFileSystem(): vfsStreamDirectory
     {
         vfsStreamWrapper::register();
         $root = vfsStream::newDirectory('build');
@@ -53,48 +57,51 @@ class WebBuilderDumpTest extends TestCase
         return $root;
     }
 
-    public function testNominalCase()
+    public function testNominalCase(): void
     {
         $webBuilder = new WebBuilder(new NullOutput(), vfsStream::url('build'), [], false);
         $webBuilder->setRootPackage($this->rootPackage);
         $webBuilder->dump([$this->package]);
 
-        $html = $this->root->getChild('build/index.html')->getContent();
+        /** @var vfsStreamFile $file */
+        $file = $this->root->getChild('build/index.html');
+        $html = $file->getContent();
 
-        $this->assertRegExp('/<title>dummy root package Composer repository<\/title>/', $html);
-        $this->assertRegExp('{<h3 id="[^"]+" class="panel-title package-title">\s*<a href="#vendor/name" class="anchor">\s*<svg[^>]*>.+</svg>\s*vendor/name\s*</a>\s*</h3>}si', $html);
+        $this->assertMatchesRegularExpression('/<title>dummy root package<\/title>/', $html);
+        $this->assertMatchesRegularExpression('{<div id="[^"]+" class="card-header[^"]+">\s*<a href="#vendor/name" class="[^"]+">\s*<svg[^>]*>.+</svg>\s*vendor/name\s*</a>\s*</div>}si', $html);
         $this->assertFalse((bool) preg_match('/<p class="abandoned">/', $html));
     }
 
-    public function testRepositoryWithNoName()
+    public function testRepositoryWithNoName(): void
     {
-        $this->rootPackage = new RootPackage('__root__', 0, 0);
+        $this->rootPackage = new RootPackage('__root__', '0', '0');
         $webBuilder = new WebBuilder(new NullOutput(), vfsStream::url('build'), [], false);
         $webBuilder->setRootPackage($this->rootPackage);
         $webBuilder->dump([$this->package]);
 
-        $html = $this->root->getChild('build/index.html')->getContent();
+        /** @var vfsStreamFile $file */
+        $file = $this->root->getChild('build/index.html');
+        $html = $file->getContent();
 
-        $this->assertRegExp('/<title>A Composer repository<\/title>/', $html);
+        $this->assertMatchesRegularExpression('/<title>A<\/title>/', $html);
     }
 
-    public function testDependencies()
+    public function testDependencies(): void
     {
-        $link = new Link('dummytest', 'vendor/name');
+        $link = new Link('dummytest', 'vendor/name', new MatchAllConstraint());
         $this->package->setRequires([$link]);
         $webBuilder = new WebBuilder(new NullOutput(), vfsStream::url('build'), [], false);
         $webBuilder->setRootPackage($this->rootPackage);
         $webBuilder->dump([$this->package]);
 
-        $html = $this->root->getChild('build/index.html')->getContent();
+        /** @var vfsStreamFile $file */
+        $file = $this->root->getChild('build/index.html');
+        $html = $file->getContent();
 
-        $this->assertRegExp('/<a href="#dummytest">dummytest<\/a>/', $html);
+        $this->assertMatchesRegularExpression('/<a href="#dummytest">dummytest<\/a>/', $html);
     }
 
-    /**
-     * @return array
-     */
-    public function dataAbandoned()
+    public function dataAbandoned(): array
     {
         $data = [];
 
@@ -115,18 +122,19 @@ class WebBuilderDumpTest extends TestCase
      * @dataProvider dataAbandoned
      *
      * @param bool|string $abandoned
-     * @param string $expected
      */
-    public function testAbandoned($abandoned, $expected)
+    public function testAbandoned($abandoned, string $expected): void
     {
         $webBuilder = new WebBuilder(new NullOutput(), vfsStream::url('build'), [], false);
         $webBuilder->setRootPackage($this->rootPackage);
         $this->package->setAbandoned($abandoned);
         $webBuilder->dump([$this->package]);
 
-        $html = $this->root->getChild('build/index.html')->getContent();
+        /** @var vfsStreamFile $file */
+        $file = $this->root->getChild('build/index.html');
+        $html = $file->getContent();
 
-        $this->assertRegExp('/Package is abandoned, you should avoid using it/', $html);
-        $this->assertRegExp($expected, $html);
+        $this->assertMatchesRegularExpression('/Package is abandoned, you should avoid using it/', $html);
+        $this->assertMatchesRegularExpression($expected, $html);
     }
 }

@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 /*
  * This file is part of composer/satis.
  *
@@ -13,6 +15,7 @@ namespace Composer\Satis\Console\Command;
 
 use Composer\Command\BaseCommand;
 use Composer\Json\JsonFile;
+use Composer\Satis\PackageSelection\PackageSelection;
 use Symfony\Component\Console\Input\InputArgument;
 use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Output\OutputInterface;
@@ -21,28 +24,28 @@ use Symfony\Component\Finder\SplFileInfo;
 
 class PurgeCommand extends BaseCommand
 {
-    protected function configure()
+    protected function configure(): void
     {
         $this->setName('purge')
             ->setDescription('Purge packages')
             ->setDefinition([
                 new InputArgument('file', InputArgument::OPTIONAL, 'Json file to use', './satis.json'),
                 new InputArgument('output-dir', InputArgument::OPTIONAL, 'Location where to output built files', null),
+                new InputArgument('dry-run', InputArgument::OPTIONAL, 'Dry run, allows to inspect what might be deleted', null),
             ])
             ->setHelp(
-<<<'EOT'
-The <info>purge</info> command deletes useless archive files, depending
-on given json file (satis.json is used by default) and the
-newest json file in the include directory of the given output-dir.
+                <<<'EOT'
+                The <info>purge</info> command deletes useless archive files, depending
+                on given json file (satis.json is used by default) and the
+                newest json file in the include directory of the given output-dir.
 
-In your satis.json (or other name you give), you must define
-"archive" argument.
-
-EOT
+                In your satis.json (or other name you give), you must define
+                "archive" argument. You also need to define "homepage" argument or "SATIS_HOMEPAGE" environment variable if you don't use archive "prefix-url" argument.
+                EOT
             );
     }
 
-    protected function execute(InputInterface $input, OutputInterface $output)
+    protected function execute(InputInterface $input, OutputInterface $output): int
     {
         $configFile = $input->getArgument('file');
         $file = new JsonFile($configFile);
@@ -62,44 +65,34 @@ EOT
             return 1;
         }
 
-        if (!$outputDir = $input->getArgument('output-dir')) {
-            throw new \InvalidArgumentException('The output dir must be specified as second argument');
+        $outputDir = $input->getArgument('output-dir') ?? $config['output-dir'] ?? null;
+        if (null === $outputDir) {
+            throw new \InvalidArgumentException('The output dir must be specified as second argument or be configured inside ' . $input->getArgument('file'));
         }
 
-        $files = glob($outputDir . '/include/*.json');
-
-        if (empty($files)) {
-            $output->writeln('<info>No log file</info>');
-
-            return 1;
+        $dryRun = (bool) $input->getArgument('dry-run');
+        if ($dryRun) {
+            $output->writeln('<notice>Dry run enabled, no actual changes will be done.</notice>');
         }
 
-        $files = array_combine($files, array_map('filemtime', $files));
-        arsort($files);
+        $packageSelection = new PackageSelection($output, $outputDir, $config, false);
+        $packages = $packageSelection->load();
 
-        $file = file_get_contents(key($files));
-        $json = json_decode($file, true);
-
-        $prefix = $config['archive']['directory'];
-        if (isset($config['archive']['prefix-url'])) {
-            $prefix = sprintf('%s/%s/', $config['archive']['prefix-url'], $prefix);
-        } else {
-            $prefix = sprintf('%s/%s/', $config['homepage'], $prefix);
-        }
+        $prefix = sprintf(
+            '%s/%s/',
+            $config['archive']['prefix-url'] ?? getenv('SATIS_HOMEPAGE') ?: $config['homepage'],
+            $config['archive']['directory']
+        );
 
         $length = strlen($prefix);
         $needed = [];
-        foreach ($json['packages'] as $package) {
-            foreach ($package as $version) {
-                if (!isset($version['dist']['url'])) {
-                    continue;
-                }
-
-                $url = $version['dist']['url'];
-
-                if (substr($url, 0, $length) === $prefix) {
-                    $needed[] = substr($url, $length);
-                }
+        foreach ($packages as $package) {
+            if (!$package->getDistType()) {
+                continue;
+            }
+            $url = $package->getDistUrl();
+            if (substr($url, 0, $length) === $prefix) {
+                $needed[] = substr($url, $length);
             }
         }
 
@@ -120,7 +113,8 @@ EOT
         /** @var SplFileInfo[] $unreferenced */
         $unreferenced = [];
         foreach ($finder as $file) {
-            if (!in_array($file->getRelativePathname(), $needed)) {
+            $filename = strtr($file->getRelativePathname(), DIRECTORY_SEPARATOR, '/');
+            if (!in_array($filename, $needed)) {
                 $unreferenced[] = $file;
             }
         }
@@ -132,7 +126,9 @@ EOT
         }
 
         foreach ($unreferenced as $file) {
-            unlink($file->getPathname());
+            if (!$dryRun) {
+                unlink($file->getPathname());
+            }
 
             $output->writeln(sprintf(
                 '<info>Removed archive</info>: <comment>%s</comment>',
@@ -140,26 +136,42 @@ EOT
             ));
         }
 
-        $finder = new Finder();
-        $finder
-            ->directories()
-            ->ignoreDotFiles(true)
-            ->ignoreUnreadableDirs(true)
-            ->in($distDirectory)
-        ;
-
-        foreach ($finder->getIterator() as $directory) {
-            if (!(new Finder())->in($directory->getPathname())->files()->count()) {
-                rmdir($directory->getPathname());
-                $output->writeln(sprintf(
-                    '<info>Removed empty directory</info>: <comment>%s</comment>',
-                    $directory->getPathname()
-                ));
-            }
+        if (!$dryRun) {
+            $this->removeEmptyDirectories($output, $distDirectory);
         }
 
         $output->writeln('<info>Done.</info>');
 
         return 0;
+    }
+
+    private function removeEmptyDirectories(OutputInterface $output, string $dir, int $depth = 2): bool
+    {
+        $empty = true;
+        $children = @scandir($dir);
+
+        if (false === $children) {
+            return false;
+        }
+
+        foreach ($children as $child) {
+            if ('.' === $child || '..' === $child) {
+                continue;
+            }
+
+            $path = $dir . DIRECTORY_SEPARATOR . $child;
+
+            if (is_dir($path)
+                && $depth > 0
+                && $this->removeEmptyDirectories($output, $path, $depth - 1)
+                && rmdir($path)
+            ) {
+                $output->writeln(sprintf('<info>Removed empty directory</info>: <comment>%s</comment>', $path));
+            } else {
+                $empty = false;
+            }
+        }
+
+        return $empty;
     }
 }

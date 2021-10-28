@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 /*
  * This file is part of composer/satis.
  *
@@ -12,44 +14,37 @@
 namespace Composer\Satis\Builder;
 
 use Composer\Composer;
+use Composer\Downloader\DownloadManager;
 use Composer\Factory;
+use Composer\Package\Archiver\ArchiveManager;
+use Composer\Package\CompletePackage;
+use Composer\Package\CompletePackageInterface;
+use Composer\Package\PackageInterface;
 use Composer\Util\Filesystem;
 use Symfony\Component\Console\Helper\ProgressBar;
 use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Output\OutputInterface;
 
-/**
- * Builds the archives of the repository.
- *
- * @author James Hautot <james@rezo.net>
- */
 class ArchiveBuilder extends Builder
 {
     /** @var Composer A Composer instance. */
     private $composer;
-
     /** @var InputInterface */
     private $input;
 
-    /**
-     * {@inheritdoc}
-     */
-    public function dump(array $packages)
+    public function dump(array $packages): void
     {
         $helper = new ArchiveBuilderHelper($this->output, $this->config['archive']);
         $basedir = $helper->getDirectory($this->outputDir);
         $this->output->writeln(sprintf("<info>Creating local downloads in '%s'</info>", $basedir));
-        $format = $this->config['archive']['format'] ?? 'zip';
         $endpoint = $this->config['archive']['prefix-url'] ?? $this->config['homepage'];
         $includeArchiveChecksum = (bool) ($this->config['archive']['checksum'] ?? true);
-        $ignoreFilters = (bool) ($this->config['archive']['ignore-filters'] ?? false);
-        $overrideDistType = (bool) ($this->config['archive']['override-dist-type'] ?? false);
         $composerConfig = $this->composer->getConfig();
         $factory = new Factory();
-        /* @var \Composer\Downloader\DownloadManager $downloadManager */
+        /* @var DownloadManager $downloadManager */
         $downloadManager = $this->composer->getDownloadManager();
-        /* @var \Composer\Package\Archiver\ArchiveManager $archiveManager */
-        $archiveManager = $factory->createArchiveManager($composerConfig, $downloadManager);
+        /* @var ArchiveManager $archiveManager */
+        $archiveManager = $this->composer->getArchiveManager();
         $archiveManager->setOverwriteFiles(false);
 
         shuffle($packages);
@@ -74,7 +69,7 @@ class ArchiveBuilder extends Builder
             );
         }
 
-        /* @var \Composer\Package\CompletePackage $package */
+        /** @var CompletePackage $package */
         foreach ($packages as $package) {
             if ($helper->isSkippable($package)) {
                 continue;
@@ -107,50 +102,15 @@ class ArchiveBuilder extends Builder
 
                 $intermediatePath = preg_replace('#[^a-z0-9-_/]#i', '-', $package->getName());
 
-                $packageName = $archiveManager->getPackageFilename($package);
-
                 if ('pear-library' === $package->getType()) {
-                    // PEAR packages are archives already
-                    $filesystem = new Filesystem();
-                    $path = sprintf(
-                        '%s/%s/%s.%s',
-                        realpath($basedir),
-                        $intermediatePath,
-                        $packageName,
-                        pathinfo($package->getDistUrl(), PATHINFO_EXTENSION)
-                    );
-
-                    if (!file_exists($path)) {
-                        $downloadDir = sys_get_temp_dir() . '/composer_archiver/' . $packageName;
-                        $filesystem->ensureDirectoryExists($downloadDir);
-                        $downloadManager->download($package, $downloadDir, false);
-                        $filesystem->ensureDirectoryExists(dirname($path));
-                        $filesystem->rename($downloadDir . '/' . pathinfo($package->getDistUrl(), PATHINFO_BASENAME), $path);
-                        $filesystem->removeDirectory($downloadDir);
-                    }
-
-                    // Set archive format to `file` to tell composer to download it as is
-                    $archiveFormat = 'file';
-                } else {
-                    $targetDir = sprintf('%s/%s', $basedir, $intermediatePath);
-                    $archiveFormat = $format;
-
-                    if (true === $overrideDistType) {
-                        $filesystem = new Filesystem();
-                        $filesystem->ensureDirectoryExists($targetDir);
-                        $originalDistType = $package->getDistType();
-                        $package->setDistType($format);
-                        $path = realpath($targetDir) . '/' . $archiveManager->getPackageFilename($package) . '.' . $format;
-
-                        if (!file_exists($path)) {
-                            $package->setDistType($originalDistType);
-                            $downloaded = $archiveManager->archive($package, $format, $targetDir, null, $ignoreFilters);
-                            $filesystem->rename($downloaded, $path);
-                        }
-                    } else {
-                        $path = $archiveManager->archive($package, $format, $targetDir, null, $ignoreFilters);
-                    }
+                    /* @see https://github.com/composer/composer/commit/44a4429978d1b3c6223277b875762b2930e83e8c */
+                    throw new \RuntimeException('The PEAR repository has been removed from Composer 2.0');
                 }
+
+                $targetDir = sprintf('%s/%s', $basedir, $intermediatePath);
+
+                $path = $this->archive($downloadManager, $archiveManager, $package, $targetDir);
+                $archiveFormat = pathinfo($path, PATHINFO_EXTENSION);
 
                 $archive = basename($path);
                 $distUrl = sprintf('%s/%s/%s/%s', $endpoint, $this->config['archive']['directory'], $intermediatePath, $archive);
@@ -185,29 +145,75 @@ class ArchiveBuilder extends Builder
         }
     }
 
-    /**
-     * Sets the Composer instance.
-     *
-     * @param Composer $composer A Composer instance
-     *
-     * @return $this
-     */
-    public function setComposer(Composer $composer)
+    public function setComposer(Composer $composer): self
     {
         $this->composer = $composer;
 
         return $this;
     }
 
-    /**
-     * @param InputInterface $input
-     *
-     * @return $this;
-     */
-    public function setInput(InputInterface $input)
+    public function setInput(InputInterface $input): self
     {
         $this->input = $input;
 
         return $this;
+    }
+
+    private function archive(DownloadManager $downloadManager, ArchiveManager $archiveManager, CompletePackageInterface $package, string $targetDir): string
+    {
+        $format = (string) ($this->config['archive']['format'] ?? 'zip');
+        $ignoreFilters = (bool) ($this->config['archive']['ignore-filters'] ?? false);
+        $overrideDistType = (bool) ($this->config['archive']['override-dist-type'] ?? false);
+        $rearchive = (bool) ($this->config['archive']['rearchive'] ?? true);
+
+        $filesystem = new Filesystem();
+        $filesystem->ensureDirectoryExists($targetDir);
+        $targetDir = realpath($targetDir);
+
+        if ($overrideDistType) {
+            $originalDistType = $package->getDistType();
+            $package->setDistType($format);
+            $packageName = $archiveManager->getPackageFilename($package);
+            $package->setDistType($originalDistType);
+        } else {
+            $packageName = $archiveManager->getPackageFilename($package);
+        }
+
+        $path = $targetDir . '/' . $packageName . '.' . $format;
+        if (file_exists($path)) {
+            return $path;
+        }
+
+        if (!$rearchive && in_array($distType = $package->getDistType(), ['tar', 'zip'], true)) {
+            if ($overrideDistType) {
+                $packageName = $archiveManager->getPackageFilename($package);
+            }
+
+            $path = $targetDir . '/' . $packageName . '.' . $distType;
+            if (file_exists($path)) {
+                return $path;
+            }
+
+            $downloadDir = sys_get_temp_dir() . '/composer_archiver' . uniqid();
+            $filesystem->ensureDirectoryExists($downloadDir);
+            $downloader = $downloadManager->getDownloader('file');
+            $downloader->download($package, $downloadDir);
+
+            $filesystem->ensureDirectoryExists(dirname($path));
+            $filesystem->rename($downloadDir . '/' . pathinfo($package->getDistUrl(), PATHINFO_BASENAME), $path);
+            $filesystem->removeDirectory($downloadDir);
+
+            return $path;
+        }
+
+        if ($overrideDistType) {
+            $path = $targetDir . '/' . $packageName . '.' . $format;
+            $downloaded = $archiveManager->archive($package, $format, $targetDir, null, $ignoreFilters);
+            $filesystem->rename($downloaded, $path);
+
+            return $path;
+        }
+
+        return $archiveManager->archive($package, $format, $targetDir, null, $ignoreFilters);
     }
 }

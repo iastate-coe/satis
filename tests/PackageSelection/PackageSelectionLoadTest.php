@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 /*
  * This file is part of composer/satis.
  *
@@ -37,7 +39,7 @@ class PackageSelectionLoadTest extends TestCase
     /** @var vfsStreamDirectory */
     protected $root;
 
-    protected function setUp()
+    protected function setUp(): void
     {
         static $extra = [
             'branch-alias' => [
@@ -53,14 +55,22 @@ class PackageSelectionLoadTest extends TestCase
 
         $this->root = $this->setFileSystem();
 
-        $this->selection = new PackageSelection(new NullOutput(), vfsStream::url('build'), [
-            'repositories' => [['type' => 'composer', 'url' => 'http://localhost:54715']],
-            'require' => ['vendor/name' => '*'],
-        ], false);
+        $this->selection = new PackageSelection(
+            new NullOutput(),
+            vfsStream::url('build'),
+            [
+                'repositories' => [
+                    ['type' => 'composer', 'url' => 'http://localhost:54715'],
+                ],
+                'require' => ['vendor/name' => '*'],
+            ],
+            false
+        );
+
         $this->selection->setPackagesFilter(['vendor/name']);
     }
 
-    protected function setFileSystem()
+    protected function setFileSystem(): vfsStreamDirectory
     {
         vfsStreamWrapper::register();
         $root = vfsStream::newDirectory('build');
@@ -75,7 +85,7 @@ class PackageSelectionLoadTest extends TestCase
         return $root;
     }
 
-    public function testNoJsonFile()
+    public function testNoJsonFile(): void
     {
         /*
          * no json filename means empty $packages
@@ -84,7 +94,7 @@ class PackageSelectionLoadTest extends TestCase
         $this->assertEmpty($this->selection->load());
     }
 
-    public function testNoIncludeFile()
+    public function testNoIncludeFile(): void
     {
         /*
          * include file not found means output + empty $packages
@@ -93,7 +103,7 @@ class PackageSelectionLoadTest extends TestCase
         $this->assertEmpty($this->selection->load());
     }
 
-    public function testNoPackagesFilter()
+    public function testNoPackagesFilter(): void
     {
         /*
          * no filterPackages means all $packages
@@ -102,7 +112,7 @@ class PackageSelectionLoadTest extends TestCase
         $this->assertNotEmpty($this->selection->load());
     }
 
-    public function testPackageInFilter()
+    public function testPackageInFilter(): void
     {
         /*
          * json filename + filterPackages :
@@ -111,7 +121,7 @@ class PackageSelectionLoadTest extends TestCase
         $this->assertEmpty($this->selection->load());
     }
 
-    public function testPackageNotInFilter()
+    public function testPackageNotInFilter(): void
     {
         /*
          * json filename + filterPackages :
@@ -121,7 +131,7 @@ class PackageSelectionLoadTest extends TestCase
         $this->assertNotEmpty($this->selection->load());
     }
 
-    public function testAliasNotSelected()
+    public function testAliasNotSelected(): void
     {
         $this->selection->setPackagesFilter(['othervendor/othername']);
         $packages = $this->selection->load();

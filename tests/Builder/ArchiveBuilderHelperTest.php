@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 /*
  * This file is part of composer/satis.
  *
@@ -13,6 +15,7 @@ namespace Composer\Satis\Builder;
 
 use Composer\Package\Link;
 use Composer\Package\Package;
+use Composer\Semver\Constraint\MatchAllConstraint;
 use PHPUnit\Framework\TestCase;
 use Symfony\Component\Console\Output\NullOutput;
 
@@ -24,7 +27,7 @@ class ArchiveBuilderHelperTest extends TestCase
     /** @var NullOutput */
     protected $output;
 
-    public function setUp()
+    public function setUp(): void
     {
         $this->output = new NullOutput();
     }
@@ -51,7 +54,7 @@ class ArchiveBuilderHelperTest extends TestCase
     /**
      * @dataProvider dataDirectories
      */
-    public function testDirectoryConfig($expected, $outputDir, $config)
+    public function testDirectoryConfig(string $expected, string $outputDir, array $config)
     {
         $helper = new ArchiveBuilderHelper($this->output, $config);
         $this->assertEquals($helper->getDirectory($outputDir), $expected);
@@ -64,7 +67,7 @@ class ArchiveBuilderHelperTest extends TestCase
         $package1 = new Package('vendor/name', '1.0.0.0', '1.0');
         $package2 = new Package('vendor/name', 'dev-master', 'dev-master');
         $package3 = new Package('othervendor/othername', '1.0.0.0', '1.0');
-        $package3->setProvides([new Link('', 'vendor/name')]);
+        $package3->setProvides([new Link('', 'vendor/name', new MatchAllConstraint())]);
 
         $data = [];
 
@@ -122,7 +125,7 @@ class ArchiveBuilderHelperTest extends TestCase
     /**
      * @dataProvider dataPackages
      */
-    public function testSkipDump($expected, $package, $config)
+    public function testSkipDump(bool $expected, Package $package, array $config)
     {
         $helper = new ArchiveBuilderHelper($this->output, $config);
         $this->assertEquals($helper->isSkippable($package), $expected);

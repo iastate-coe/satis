@@ -3,16 +3,20 @@
     "description": "Simple Repository Generator",
     "keywords": ["package", "repository", "generator", "static", "composer"],
     "homepage": "https://github.com/composer/satis",
-    "type": "library",
+    "type": "project",
     "license": "MIT",
     "authors": [{
         "name": "Jordi Boggiano",
         "email": "j.boggiano@seld.be",
-        "homepage": "http://seld.be"
+        "homepage": "https://seld.be"
     }, {
         "name": "Nils Adermann",
         "email": "naderman@naderman.de",
-        "homepage": "http://www.naderman.de"
+        "homepage": "https://www.naderman.de"
+    }, {
+        "name": "Rob Bast",
+        "email": "rob.bast@gmail.com",
+        "homepage": "https://robbast.nl"
     }],
     "support": {
         "issues": "https://github.com/composer/satis",
@@ -21,32 +25,44 @@
         "irc": "irc://freenode.net/composer"
     },
     "bin": ["bin/satis"],
+    "replace": {
+        "symfony/polyfill-php72": "*",
+        "symfony/polyfill-php73": "*"
+    },
     "require": {
-        "php": "^7.0",
-        "composer/composer": "^1.4",
-        "twig/twig": "^1.7 || ^2.0",
-        "symfony/console": "^2.1 || ^3.0.4 || ^4.0"
+        "php": "^7.3||^8.0",
+        "composer/composer": "^2.1.9",
+        "symfony/console": "^4.4||^5.0",
+        "twig/twig": "^3.3",
+        "twig/html-extra": "^3.3"
     },
     "autoload": {
         "psr-4": { "Composer\\Satis\\": "src" }
     },
     "require-dev": {
+<<<<<<< HEAD
         "phpunit/phpunit": "^6.4",
         "phpunit/phpunit-mock-objects": "^4.0",
         "mikey179/vfsstream": "^1.6",
         "friendsofphp/php-cs-fixer": "^2.11"
+=======
+        "ext-json": "*",
+        "mikey179/vfsstream": "^1.6.8",
+        "phpunit/phpunit": "^9.5"
+>>>>>>> upstream/main
     },
     "autoload-dev": {
         "psr-4": { "Composer\\Satis\\": "tests" }
     },
-    "config": {
-        "platform": {
-            "php": "7.0"
-        }
-    },
     "extra": {
         "branch-alias": {
-            "dev-master": "2.0-dev"
+            "dev-main": "3.0-dev"
         }
+    },
+    "scripts": {
+        "test": "vendor/bin/phpunit",
+        "phpstan": "tools/phpstan/vendor/bin/phpstan",
+        "php-cs-fixer": "tools/php-cs-fixer/vendor/bin/php-cs-fixer fix --dry-run --diff",
+        "php-cs-fixer-fix": "tools/php-cs-fixer/vendor/bin/php-cs-fixer fix"
     }
 }

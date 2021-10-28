@@ -1,9 +1,14 @@
-*
-!bin
-!docs
-!res
-!src
-!views
-!composer.json
-!composer.lock
-!LICENSE
+# ignore everything
+**
+
+# unignored directories
+!/bin/
+!/res/
+!/src/
+!/views/
+
+# unignored files
+!/composer.json
+!/composer.lock
+!/LICENSE
+!/php-cli.ini
