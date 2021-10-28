@@ -17,7 +17,7 @@
 @import "~bootstrap/scss/transitions";
 // @import "~bootstrap/scss/dropdown";
 // @import "~bootstrap/scss/button-group";
-// @import "~bootstrap/scss/input-group";
+@import "~bootstrap/scss/input-group";
 // @import "~bootstrap/scss/custom-forms";
 // @import "~bootstrap/scss/nav";
 // @import "~bootstrap/scss/navbar";
@@ -32,14 +32,48 @@
 // @import "~bootstrap/scss/list-group";
 // @import "~bootstrap/scss/close";
 // @import "~bootstrap/scss/modal";
-// @import "~bootstrap/scss/tooltip";
+@import "~bootstrap/scss/tooltip";
 // @import "~bootstrap/scss/popover";
 // @import "~bootstrap/scss/carousel";
 @import "~bootstrap/scss/utilities";
 @import "~bootstrap/scss/print";
 
 pre.file {
-    border-left: 2px solid $primary;
-    background-color: $light;
-    padding: map-get($spacers, 2);
+  border-left: 2px solid $primary;
+  background-color: $light;
+  padding: map-get($spacers, 2);
+}
+
+.toggle-settings {
+  svg {
+    fill: currentColor;
+    pointer-events: none;
+    transition: transform 0.25s;
+  }
+  &.active svg {
+    transform: rotate(45deg);
+  }
+}
+
+.copy-snippet {
+  &__button svg {
+    fill: currentColor;
+    pointer-events: none;
+  }
+  &__tooltip {
+    top: 100%;
+    left: 0;
+    transform: translateY(-50%);
+    transition: opacity 0.25s, transform 0.25s;
+    &.show {
+      transform: none;
+    }
+    .arrow {
+      left: 50%;
+      transform: translateX(-50%);
+    }
+    .tooltip-inner {
+      max-width: none;
+    }
+  }
 }

@@ -1,0 +1,10 @@
+parameters:
+	level: 5
+	tmpDir: .
+
+	paths:
+		- src
+		- tests
+
+	stubFiles:
+		- tools/phpstan/stubs/Package.stub

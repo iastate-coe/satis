@@ -14,8 +14,10 @@ declare(strict_types=1);
 namespace Composer\Satis\Builder;
 
 use Composer\Json\JsonFile;
+use Composer\MetadataMinifier\MetadataMinifier;
 use Composer\Package\Dumper\ArrayDumper;
 use Composer\Package\PackageInterface;
+use Composer\Semver\VersionParser;
 use Symfony\Component\Console\Output\OutputInterface;
 
 class PackagesBuilder extends Builder
@@ -26,13 +28,16 @@ class PackagesBuilder extends Builder
     private $includeFileName;
     /** @var array */
     private $writtenIncludeJsons = [];
+    /** @var bool */
+    private $minify;
 
-    public function __construct(OutputInterface $output, string $outputDir, array $config, bool $skipErrors)
+    public function __construct(OutputInterface $output, string $outputDir, array $config, bool $skipErrors, bool $minify = false)
     {
         parent::__construct($output, $outputDir, $config, $skipErrors);
 
         $this->filename = $this->outputDir . '/packages.json';
         $this->includeFileName = $config['include-filename'] ?? 'include/all$%hash%.json';
+        $this->minify = $minify;
     }
 
     /**
@@ -46,6 +51,7 @@ class PackagesBuilder extends Builder
             $packagesByName[$package->getName()][$package->getPrettyVersion()] = $dumper->dump($package);
         }
 
+        // Composer 1.0 format
         $repo = ['packages' => []];
         if (isset($this->config['providers']) && $this->config['providers']) {
             $providersUrl = 'p/%package%$%hash%.json';
@@ -75,6 +81,44 @@ class PackagesBuilder extends Builder
             }
         } else {
             $repo['includes'] = $this->dumpPackageIncludeJson($packagesByName, $this->includeFileName);
+        }
+
+        // Composer 2.0 format
+        $metadataUrl = 'p2/%package%.json';
+        if (!empty($this->config['homepage'])) {
+            $repo['metadata-url'] = parse_url(rtrim($this->config['homepage'], '/'), PHP_URL_PATH) . '/' . $metadataUrl;
+        } else {
+            $repo['metadata-url'] = $metadataUrl;
+        }
+
+        if (!empty($this->config['available-package-patterns'])) {
+            $repo['available-package-patterns'] = $this->config['available-package-patterns'];
+        } else {
+            $repo['available-packages'] = array_keys($packagesByName);
+        }
+
+        foreach ($packagesByName as $packageName => $versionPackages) {
+            $stableVersions = [];
+            $devVersions = [];
+            foreach ($versionPackages as $version => $versionConfig) {
+                if ('dev' === VersionParser::parseStability($versionConfig['version'])) {
+                    $devVersions[] = $versionConfig;
+                } else {
+                    $stableVersions[] = $versionConfig;
+                }
+            }
+
+            // Stable versions
+            $this->dumpPackageIncludeJson(
+                [$packageName => $this->minify ? MetadataMinifier::minify($stableVersions) : $stableVersions],
+                str_replace('%package%', $packageName, $metadataUrl)
+            );
+
+            // Dev versions
+            $this->dumpPackageIncludeJson(
+                [$packageName => $this->minify ? MetadataMinifier::minify($devVersions) : $devVersions],
+                str_replace('%package%', $packageName.'~dev', $metadataUrl)
+            );
         }
 
         $this->dumpPackagesJson($repo);
@@ -183,7 +227,7 @@ class PackagesBuilder extends Builder
 
         if ($path) {
             $this->writeToFile($path, $contents);
-            $this->output->writeln("<info>wrote packages to $path</info>");
+            $this->output->writeln("<info>Wrote packages to $path</info>");
         }
 
         return [
@@ -197,17 +241,18 @@ class PackagesBuilder extends Builder
      */
     private function writeToFile(string $path, string $contents): void
     {
+        if (file_exists($path) && sha1_file($path) === sha1($contents)) {
+            // The file already contains the expected contents.
+            return;
+        }
+
         $dir = dirname($path);
         if (!is_dir($dir)) {
             if (file_exists($dir)) {
-                throw new \UnexpectedValueException(
-                    $dir . ' exists and is not a directory.'
-                );
+                throw new \UnexpectedValueException($dir . ' exists and is not a directory.');
             }
             if (!@mkdir($dir, 0777, true)) {
-                throw new \UnexpectedValueException(
-                    $dir . ' does not exist and could not be created.'
-                );
+                throw new \UnexpectedValueException($dir . ' does not exist and could not be created.');
             }
         }
 

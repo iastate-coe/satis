@@ -14,11 +14,10 @@ declare(strict_types=1);
 namespace Composer\Satis\PackageSelection;
 
 use Composer\Composer;
-use Composer\DependencyResolver\DefaultPolicy;
-use Composer\DependencyResolver\Pool;
 use Composer\Json\JsonFile;
 use Composer\Package\AliasPackage;
 use Composer\Package\BasePackage;
+use Composer\Package\CompletePackage;
 use Composer\Package\Link;
 use Composer\Package\Loader\ArrayLoader;
 use Composer\Package\PackageInterface;
@@ -27,7 +26,9 @@ use Composer\Repository\ComposerRepository;
 use Composer\Repository\ConfigurableRepositoryInterface;
 use Composer\Repository\PlatformRepository;
 use Composer\Repository\RepositoryInterface;
-use Composer\Semver\Constraint\EmptyConstraint;
+use Composer\Repository\RepositorySet;
+use Composer\Semver\Constraint\MatchAllConstraint;
+use Composer\Semver\VersionParser;
 use Composer\Util\Filesystem;
 use Symfony\Component\Console\Output\OutputInterface;
 
@@ -72,17 +73,26 @@ class PackageSelection
     /** @var array The active package filter to merge. */
     private $packagesFilter = [];
 
-    /** @var string|null The active repository filter to merge. */
-    private $repositoryFilter;
+    /** @var string[]|null The active repository filter to merge. */
+    private $repositoriesFilter;
 
     /** @var bool Apply the filter also for resolving dependencies. */
     private $repositoryFilterDep;
 
-    /** @var array The selected packages from config */
+    /** @var PackageInterface[] The selected packages from config */
     private $selected = [];
 
     /** @var array A list of packages marked as abandoned */
     private $abandoned = [];
+
+    /** @var array A list of blacklisted package/constraints. */
+    private $blacklist = [];
+
+    /** @var array|null A list of package types. If set only packages with one of these types will be selected */
+    private $includeTypes;
+
+    /** @var array A list of package types that will not be selected */
+    private $excludeTypes = [];
 
     /** @var array|bool Patterns from strip-hosts. */
     private $stripHosts = false;
@@ -98,44 +108,32 @@ class PackageSelection
         $this->output = $output;
         $this->skipErrors = $skipErrors;
         $this->filename = $outputDir . '/packages.json';
+
         $this->fetchOptions($config);
     }
 
-    private function fetchOptions(array $config)
+    /**
+     * @param string[]|null $repositoriesFilter
+     */
+    public function setRepositoriesFilter(?array $repositoriesFilter, bool $forDependencies = false): void
     {
-        $this->depRepositories = $config['repositories-dep'] ?? [];
-
-        $this->requireAll = isset($config['require-all']) && true === $config['require-all'];
-        $this->requireDependencies = isset($config['require-dependencies']) && true === $config['require-dependencies'];
-        $this->requireDevDependencies = isset($config['require-dev-dependencies']) && true === $config['require-dev-dependencies'];
-        $this->onlyDependencies = isset($config['only-dependencies']) && true === $config['only-dependencies'];
-        $this->onlyBestCandidates = isset($config['only-best-candidates']) && true === $config['only-best-candidates'];
-        $this->requireDependencyFilter = (bool) ($config['require-dependency-filter'] ?? true);
-
-        if (!$this->requireAll && !isset($config['require'])) {
-            $this->output->writeln('No explicit requires defined, enabling require-all');
-            $this->requireAll = true;
-        }
-
-        $this->minimumStability = $config['minimum-stability'] ?? 'dev';
-        $this->minimumStabilityPerPackage = $config['minimum-stability-per-package'] ?? [];
-        $this->abandoned = $config['abandoned'] ?? [];
-
-        $this->stripHosts = $this->createStripHostsPatterns($config['strip-hosts'] ?? false);
-        $this->archiveEndpoint = isset($config['archive']['directory']) ? ($config['archive']['prefix-url'] ?? $config['homepage']) . '/' : null;
-
-        $this->homepage = $config['homepage'] ?? null;
-    }
-
-    public function setRepositoryFilter(?string $repositoryFilter, bool $forDependencies = false): void
-    {
-        $this->repositoryFilter = $repositoryFilter;
+        $this->repositoriesFilter = [] !== $repositoriesFilter ? $repositoriesFilter : null;
         $this->repositoryFilterDep = (bool) $forDependencies;
     }
 
-    public function hasRepositoryFilter(): bool
+    public function hasRepositoriesFilter(): bool
     {
-        return null !== $this->repositoryFilter;
+        return null !== $this->repositoriesFilter;
+    }
+
+    public function hasBlacklist(): bool
+    {
+        return count($this->blacklist) > 0;
+    }
+
+    public function hasTypeFilter(): bool
+    {
+        return null !== $this->includeTypes || count($this->excludeTypes) > 0;
     }
 
     public function setPackagesFilter(array $packagesFilter = []): void
@@ -163,15 +161,11 @@ class PackageSelection
             return BasePackage::$stabilities[$value];
         }, $this->minimumStabilityPerPackage);
 
-        $pool = new Pool($this->minimumStability, $stabilityFlags);
-
-        if ($this->hasRepositoryFilter()) {
+        if ($this->hasRepositoriesFilter()) {
             $repos = $this->filterRepositories($repos);
 
             if (0 === count($repos)) {
-                throw new \InvalidArgumentException(sprintf('Specified repository url "%s" does not exist.', $this->repositoryFilter));
-            } elseif (count($repos) > 1) {
-                throw new \InvalidArgumentException(sprintf('Found more than one repository for url "%s".', $this->repositoryFilter));
+                throw new \InvalidArgumentException(sprintf('Specified repository URL(s) "%s" do not exist.', implode('", "', $this->repositoriesFilter)));
             }
         }
 
@@ -179,44 +173,51 @@ class PackageSelection
             $repos = $this->filterPackages($repos);
 
             if (0 === count($repos)) {
-                throw new \InvalidArgumentException(sprintf('Specified package name "%s" does not exist.', $this->packagesFilter));
-            } elseif (count($repos) > 1) {
-                throw new \InvalidArgumentException(sprintf('Found more than one package name "%s".', $this->packagesFilter));
+                throw new \InvalidArgumentException(sprintf('Could not find any repositories config with "name" matching your package(s) filter: %s', implode(', ', $this->packagesFilter)));
             }
         }
 
-        $this->addRepositories($pool, $repos);
+        $repositorySet = new RepositorySet($this->minimumStability, $stabilityFlags);
+        $this->addRepositories($repositorySet, $repos);
 
         // determine the required packages
         $rootLinks = $this->requireAll ? $this->getAllLinks($repos, $this->minimumStability, $verbose) : $this->getFilteredLinks($composer);
 
         // select the required packages and determine dependencies
-        $depsLinks = $this->selectLinks($pool, $rootLinks, true, $verbose);
+        $depsLinks = $this->selectLinks($repositorySet, $rootLinks, true, $verbose);
 
         if ($this->requireDependencies || $this->requireDevDependencies) {
+            $repositorySet = new RepositorySet($this->minimumStability, $stabilityFlags);
+            $this->addRepositories($repositorySet, $repos);
             // dependencies of required packages might have changed and be part of filtered repos
-            if ($this->hasRepositoryFilter() && true !== $this->repositoryFilterDep) {
-                $this->addRepositories($pool, \array_filter($initialRepos, function ($r) use ($repos) {
+            if ($this->hasRepositoriesFilter() && true !== $this->repositoryFilterDep) {
+                $this->addRepositories($repositorySet, \array_filter($initialRepos, function ($r) use ($repos) {
                     return false === \in_array($r, $repos);
                 }));
             }
 
             // additional repositories for dependencies
-            if (!$this->hasRepositoryFilter() || true !== $this->repositoryFilterDep) {
-                $this->addRepositories($pool, $this->getDepRepos($composer));
+            if (!$this->hasRepositoriesFilter() || true !== $this->repositoryFilterDep) {
+                $this->addRepositories($repositorySet, $this->getDepRepos($composer));
             }
 
             // select dependencies
-            $this->selectLinks($pool, $depsLinks, false, $verbose);
+            $this->selectLinks($repositorySet, $depsLinks, false, $verbose);
         }
 
         $this->setSelectedAsAbandoned();
+
+        $this->pruneBlacklisted($repositorySet, $verbose);
+        $this->pruneByType($verbose);
 
         ksort($this->selected, SORT_STRING);
 
         return $this->selected;
     }
 
+    /**
+     * @return PackageInterface[]
+     */
     public function clean(): array
     {
         $this->applyStripHosts();
@@ -230,64 +231,78 @@ class PackageSelection
     public function load(): array
     {
         $packages = [];
-        $repoJson = new JsonFile($this->filename);
-        $dirName = dirname($this->filename);
+        $rootJsonFile = new JsonFile($this->filename);
+        $dirname = dirname($this->filename);
 
-        if ($repoJson->exists()) {
-            $loader = new ArrayLoader();
-            $packagesJson = $repoJson->read();
-            $jsonIncludes = isset($packagesJson['includes']) && is_array($packagesJson['includes'])
-                ? $packagesJson['includes']
-                : [];
+        if (!$rootJsonFile->exists()) {
+            return $packages;
+        }
 
-            if (isset($packagesJson['providers']) && is_array($packagesJson['providers']) && isset($packagesJson['providers-url'])) {
-                $baseUrl = $this->homepage ? parse_url(rtrim($this->homepage, '/'), PHP_URL_PATH) . '/' : null;
-                $baseUrlLength = strlen($baseUrl);
-                foreach ($packagesJson['providers'] as $packageName => $provider) {
-                    $file = str_replace(['%package%', '%hash%'], [$packageName, $provider['sha256']], $packagesJson['providers-url']);
-                    if ($baseUrl && substr($file, 0, $baseUrlLength) === $baseUrl) {
-                        $file = substr($file, $baseUrlLength);
-                    }
-                    $jsonIncludes[$file] = $provider;
+        $loader = new ArrayLoader();
+        $rootConfig = $rootJsonFile->read();
+        $includes = [];
+
+        if (isset($rootConfig['includes']) && is_array($rootConfig['includes'])) {
+            $includes = $rootConfig['includes'];
+        }
+
+        if (isset($rootConfig['providers']) && is_array($rootConfig['providers']) && isset($rootConfig['providers-url'])) {
+            $baseUrl = $this->homepage ? parse_url(rtrim($this->homepage, '/'), PHP_URL_PATH) . '/' : null;
+            $baseUrlLength = strlen($baseUrl);
+
+            foreach ($rootConfig['providers'] as $package => $provider) {
+                $file = str_replace(['%package%', '%hash%'], [$package, $provider['sha256']], $rootConfig['providers-url']);
+
+                if ($baseUrl && substr($file, 0, $baseUrlLength) === $baseUrl) {
+                    $file = substr($file, $baseUrlLength);
                 }
+
+                $includes[$file] = $provider;
+            }
+        }
+
+        foreach (array_keys($includes) as $file) {
+            $includedJsonFile = new JsonFile($dirname . '/' . $file);
+
+            if (!$includedJsonFile->exists()) {
+                $this->output->writeln(sprintf(
+                    '<error>File \'%s\' does not exist, defined in "includes" in \'%s\'</error>',
+                    $includedJsonFile->getPath(),
+                    $rootJsonFile->getPath()
+                ));
+
+                continue;
             }
 
-            foreach ($jsonIncludes as $includeFile => $includeConfig) {
-                $includeJson = new JsonFile($dirName . '/' . $includeFile);
+            $includedConfig = $includedJsonFile->read();
 
-                if (!$includeJson->exists()) {
-                    $this->output->writeln(sprintf(
-                        '<error>File \'%s\' does not exist, defined in "includes" in \'%s\'</error>',
-                        $includeJson->getPath(),
-                        $repoJson->getPath()
-                    ));
+            if (!isset($includedConfig['packages']) || !is_array($includedConfig['packages'])) {
+                continue;
+            }
 
+            $includedPackages = $includedConfig['packages'];
+
+            foreach ($includedPackages as $name => $versions) {
+                if (!is_array($versions)) {
                     continue;
                 }
 
-                $jsonPackages = $includeJson->read();
-                $jsonPackages = isset($jsonPackages['packages']) && is_array($jsonPackages['packages'])
-                    ? $jsonPackages['packages']
-                    : [];
-
-                foreach ($jsonPackages as $jsonPackage) {
-                    if (is_array($jsonPackage)) {
-                        foreach ($jsonPackage as $jsonVersion) {
-                            if (is_array($jsonVersion)) {
-                                if (isset($jsonVersion['name']) && in_array($jsonVersion['name'], $this->packagesFilter)) {
-                                    continue;
-                                }
-                                $package = $loader->load($jsonVersion);
-
-                                // skip aliases
-                                if ($package instanceof AliasPackage) {
-                                    $package = $package->getAliasOf();
-                                }
-
-                                $packages[$package->getUniqueName()] = $package;
-                            }
-                        }
+                foreach ($versions as $package) {
+                    if (!is_array($package)) {
+                        continue;
                     }
+
+                    if (isset($package['name']) && in_array($package['name'], $this->packagesFilter)) {
+                        continue;
+                    }
+
+                    $package = $loader->load($package);
+
+                    if ($package instanceof AliasPackage) {
+                        $package = $package->getAliasOf();
+                    }
+
+                    $packages[$package->getUniqueName()] = $package;
                 }
             }
         }
@@ -295,9 +310,36 @@ class PackageSelection
         return $packages;
     }
 
+    private function fetchOptions(array $config): void
+    {
+        $this->depRepositories = $config['repositories-dep'] ?? [];
+
+        $this->requireAll = isset($config['require-all']) && true === $config['require-all'];
+        $this->requireDependencies = isset($config['require-dependencies']) && true === $config['require-dependencies'];
+        $this->requireDevDependencies = isset($config['require-dev-dependencies']) && true === $config['require-dev-dependencies'];
+        $this->onlyDependencies = isset($config['only-dependencies']) && true === $config['only-dependencies'];
+        $this->onlyBestCandidates = isset($config['only-best-candidates']) && true === $config['only-best-candidates'];
+        $this->requireDependencyFilter = (bool) ($config['require-dependency-filter'] ?? true);
+
+        if (!$this->requireAll && !isset($config['require'])) {
+            $this->output->writeln('No explicit requires defined, enabling require-all');
+            $this->requireAll = true;
+        }
+
+        $this->minimumStability = $config['minimum-stability'] ?? 'dev';
+        $this->minimumStabilityPerPackage = $config['minimum-stability-per-package'] ?? [];
+        $this->abandoned = $config['abandoned'] ?? [];
+        $this->blacklist = $config['blacklist'] ?? [];
+        $this->includeTypes = $config['include-types'] ?? null;
+        $this->excludeTypes = $config['exclude-types'] ?? [];
+
+        $this->stripHosts = $this->createStripHostsPatterns($config['strip-hosts'] ?? false);
+        $this->archiveEndpoint = isset($config['archive']['directory']) ? ($config['archive']['prefix-url'] ?? $config['homepage']) . '/' : null;
+
+        $this->homepage = $config['homepage'] ?? null;
+    }
+
     /**
-     * Create patterns from strip-hosts
-     *
      * @param array|false $stripHostsConfig
      *
      * @return array|false
@@ -334,9 +376,9 @@ class PackageSelection
             }
 
             @list($host, $mask) = explode('/', $entry, 2);
-
             $host = @inet_pton($host);
 
+            /** @var string|null $mask */
             if (false === $host || (int) $mask != $mask) {
                 $this->output->writeln(sprintf('<error>Invalid subnet "%s"</error>', $entry));
                 continue;
@@ -349,7 +391,7 @@ class PackageSelection
             } else {
                 $mask = (int) $mask;
 
-                if ($mask < 0 || 'ipv4' === $type && $mask > 32 || 'ipv6' === $type && $mask > 128) {
+                if ($mask < 0 || ('ipv4' === $type && $mask > 32) || ('ipv6' === $type && $mask > 128)) {
                     continue;
                 }
             }
@@ -360,15 +402,13 @@ class PackageSelection
         return $patterns;
     }
 
-    /**
-     * Apply the patterns from strip-hosts
-     */
-    private function applyStripHosts()
+    private function applyStripHosts(): void
     {
         if (false === $this->stripHosts) {
             return;
         }
 
+        /** @var CompletePackage $package */
         foreach ($this->selected as $uniqueName => $package) {
             $sources = [];
 
@@ -380,28 +420,29 @@ class PackageSelection
                 $sources[] = 'dist';
             }
 
-            foreach ($sources as $i => $s) {
-                $url = 'source' === $s ? $package->getSourceUrl() : $package->getDistUrl();
+            foreach ($sources as $index => $type) {
+                $url = 'source' === $type ? $package->getSourceUrl() : $package->getDistUrl();
 
                 // skip distURL applied by ArchiveBuilder
-                if ('dist' === $s && null !== $this->archiveEndpoint
+                if ('dist' === $type && null !== $this->archiveEndpoint
                     && substr($url, 0, strlen($this->archiveEndpoint)) === $this->archiveEndpoint
                 ) {
                     continue;
                 }
 
                 if ($this->matchStripHostsPatterns($url)) {
-                    if ('dist' === $s) {
+                    if ('dist' === $type) {
                         // if the type is not set, ArrayDumper ignores the other properties
                         $package->setDistType(null);
                     } else {
                         $package->setSourceType(null);
                     }
 
-                    unset($sources[$i]);
+                    unset($sources[$index]);
 
                     if (0 === count($sources)) {
                         $this->output->writeln(sprintf('<error>%s has no source left after applying the strip-hosts filters and will be removed</error>', $package->getUniqueName()));
+
                         unset($this->selected[$uniqueName]);
                     }
                 }
@@ -409,79 +450,74 @@ class PackageSelection
         }
     }
 
-    /**
-     * Match an URL against the patterns from strip-hosts
-     *
-     * @return bool
-     */
-    private function matchStripHostsPatterns($url)
+    private function matchStripHostsPatterns(string $url): bool
     {
         if (Filesystem::isLocalPath($url)) {
             return true;
         }
 
-        if (is_array($this->stripHosts)) {
-            $url = trim(parse_url($url, PHP_URL_HOST), '[]');
+        if (!is_array($this->stripHosts)) {
+            return false;
+        }
 
-            if (false !== filter_var($url, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4)) {
-                $urltype = 'ipv4';
-            } elseif (false !== filter_var($url, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6)) {
-                $urltype = 'ipv6';
-            } else {
-                $urltype = 'name';
-            }
+        $url = trim(parse_url($url, PHP_URL_HOST), '[]');
 
-            if ('ipv4' === $urltype || 'ipv6' === $urltype) {
-                $urlunpack = unpack('N*', @inet_pton($url));
-            }
+        if (false !== filter_var($url, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4)) {
+            $urltype = 'ipv4';
+        } elseif (false !== filter_var($url, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6)) {
+            $urltype = 'ipv6';
+        } else {
+            $urltype = 'name';
+        }
 
-            foreach ($this->stripHosts as $pattern) {
-                @list($type, $host, $mask) = $pattern;
+        $urlunpack = null;
+        if ('ipv4' === $urltype || 'ipv6' === $urltype) {
+            $urlunpack = unpack('N*', @inet_pton($url));
+        }
 
-                if ('/local' === $type) {
-                    if ('name' === $urltype && 'localhost' === strtolower($url)
-                        || ('ipv4' === $urltype || 'ipv6' === $urltype)
-                        && false === filter_var($url, FILTER_VALIDATE_IP, FILTER_FLAG_NO_RES_RANGE)
-                    ) {
-                        return true;
-                    }
-                } elseif ('/private' === $type) {
-                    if (('ipv4' === $urltype || 'ipv6' === $urltype)
-                        && false === filter_var($url, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE)
-                    ) {
-                        return true;
-                    }
-                } elseif ('ipv4' === $type || 'ipv6' === $type) {
-                    if ($urltype === $type && $this->matchAddr($urlunpack, $host, $mask)) {
-                        return true;
-                    }
-                } elseif ('name' === $type) {
-                    if ('name' === $urltype && preg_match($host, $url)) {
-                        return true;
-                    }
+        foreach ($this->stripHosts as $pattern) {
+            @list($type, $host, $mask) = $pattern;
+
+            if ('/local' === $type) {
+                if (('name' === $urltype && 'localhost' === strtolower($url)) || (
+                    ('ipv4' === $urltype || 'ipv6' === $urltype) &&
+                    false === filter_var($url, FILTER_VALIDATE_IP, FILTER_FLAG_NO_RES_RANGE)
+                )) {
+                    return true;
+                }
+            } elseif ('/private' === $type) {
+                if (('ipv4' === $urltype || 'ipv6' === $urltype)
+                    && false === filter_var($url, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE)
+                ) {
+                    return true;
+                }
+            } elseif ('ipv4' === $type || 'ipv6' === $type) {
+                if ($urltype === $type && $this->matchAddr($urlunpack, $host, $mask)) {
+                    return true;
+                }
+            } elseif ('name' === $type) {
+                if ('name' === $urltype && preg_match($host, $url)) {
+                    return true;
                 }
             }
         }
+
+        return false;
     }
 
     /**
      * Test if two addresses have the same prefix
      *
-     * @param int[] $addr1
-     *  Chunked addr
-     * @param int[] $addr2
-     *  Chunked addr
-     * @param int $len
-     *  Length of the test
-     * @param int $chunklen
-     *  Length of each chunk
-     *
-     * @return bool
+     * @param int[] $addr1 Chunked addr
+     * @param int[] $addr2 Chunked addr
+     * @param int $len Length of the test
+     * @param int $chunklen Length of each chunk
      */
-    private function matchAddr($addr1, $addr2, $len = 0, $chunklen = 32)
+    private function matchAddr($addr1, $addr2, $len = 0, $chunklen = 32): bool
     {
         for (; $len > 0; $len -= $chunklen, next($addr1), next($addr2)) {
             $shift = $len >= $chunklen ? 0 : $chunklen - $len;
+
             if ((current($addr1) >> $shift) !== (current($addr2) >> $shift)) {
                 return false;
             }
@@ -491,18 +527,15 @@ class PackageSelection
     }
 
     /**
-     * Add repositories to a pool
+     * @param RepositoryInterface[] $repositories
      *
-     * @param Pool  $pool
-     *  The Pool instance
-     * @param RepositoryInterface[] $repos
-     *  Array of repositories
+     * @throws \Exception
      */
-    private function addRepositories(Pool $pool, array $repos)
+    private function addRepositories(RepositorySet $repositorySet, array $repositories): void
     {
-        foreach ($repos as $repo) {
+        foreach ($repositories as $repository) {
             try {
-                $pool->addRepository($repo);
+                $repositorySet->addRepository($repository);
             } catch (\Exception $exception) {
                 if (!$this->skipErrors) {
                     throw $exception;
@@ -513,11 +546,9 @@ class PackageSelection
         }
     }
 
-    /**
-     * Marks selected packages as abandoned by Configuration file
-     */
-    private function setSelectedAsAbandoned()
+    private function setSelectedAsAbandoned(): void
     {
+        /** @var CompletePackage $package */
         foreach ($this->selected as $name => $package) {
             if (array_key_exists($package->getName(), $this->abandoned)) {
                 $package->setAbandoned($this->abandoned[$package->getName()]);
@@ -526,66 +557,129 @@ class PackageSelection
     }
 
     /**
-     * Gets a list of filtered Links.
+     * Removes selected packages which are blacklisted in configuration.
      *
-     * @param Composer $composer The Composer instance
+     * @return PackageInterface[]
+     */
+    private function pruneBlacklisted(RepositorySet $repositorySet, bool $verbose): array
+    {
+        $blacklisted = [];
+        if ($this->hasBlacklist()) {
+            $parser = new VersionParser();
+            $pool = $repositorySet->createPoolWithAllPackages();
+            /** @var BasePackage $package */
+            foreach ($this->selected as $selectedKey => $package) {
+                foreach ($this->blacklist as $blacklistName => $blacklistConstraint) {
+                    $constraint = $parser->parseConstraints($blacklistConstraint);
+                    if ($pool->match($package, $blacklistName, $constraint)) {
+                        if ($verbose) {
+                            $this->output->writeln('Blacklisted ' . $package->getPrettyName() . ' (' . $package->getPrettyVersion() . ')');
+                        }
+                        $blacklisted[$selectedKey] = $package;
+                        unset($this->selected[$selectedKey]);
+                    }
+                }
+            }
+        }
+
+        return $blacklisted;
+    }
+
+    /**
+     * Removes packages with types that don't match the configuration
+     *
+     * @return PackageInterface[]
+     */
+    private function pruneByType(bool $verbose): array
+    {
+        $excluded = [];
+        if ($this->hasTypeFilter()) {
+            foreach ($this->selected as $selectedKey => $package) {
+                if (null !== $this->includeTypes && !in_array($package->getType(), $this->includeTypes)) {
+                    if ($verbose) {
+                        $this->output->writeln(
+                            'Excluded ' . $package->getPrettyName()
+                            . ' (' . $package->getPrettyVersion() . ') because '
+                            . $package->getType() . ' was not in the array of types to include.'
+                        );
+                    }
+                    $excluded[$selectedKey] = $package;
+                    unset($this->selected[$selectedKey]);
+                } elseif (in_array($package->getType(), $this->excludeTypes)) {
+                    if ($verbose) {
+                        $this->output->writeln(
+                            'Excluded ' . $package->getPrettyName()
+                            . ' (' . $package->getPrettyVersion() . ') because '
+                            . $package->getType() . ' was in the array of types to exclude.'
+                        );
+                    }
+                    $excluded[$selectedKey] = $package;
+                    unset($this->selected[$selectedKey]);
+                }
+            }
+        }
+
+        return $excluded;
+    }
+
+    /**
+     * Gets a list of filtered Links.
      *
      * @return Link[]
      */
-    private function getFilteredLinks(Composer $composer)
+    private function getFilteredLinks(Composer $composer): array
     {
         $links = array_values($composer->getPackage()->getRequires());
 
-        // only pick up packages in our filter, if a filter has been set.
-        if ($this->hasFilterForPackages()) {
-            $packagesFilter = $this->packagesFilter;
-            $links = array_filter($links, function (Link $link) use ($packagesFilter) {
-                return in_array($link->getTarget(), $packagesFilter);
-            });
+        if (!$this->hasFilterForPackages()) {
+            return $links;
         }
+
+        $packagesFilter = $this->packagesFilter;
+        $links = array_filter(
+            $links,
+            function (Link $link) use ($packagesFilter) {
+                return in_array($link->getTarget(), $packagesFilter);
+            }
+        );
 
         return array_values($links);
     }
 
     /**
-     * Gets all Links.
+     * @param RepositoryInterface[] $repositories
      *
-     * This method is called when 'require-all' is set to true.
-     *
-     * @param array  $repos            List of all Repositories configured
-     * @param string $minimumStability The minimum stability each package must have to be selected
-     * @param bool   $verbose          Output info if true
-     *
-     * @return Link[]|Package[]
+     * @return Link[]|PackageInterface[]
      */
-    private function getAllLinks($repos, $minimumStability, $verbose)
+    private function getAllLinks(array $repositories, string $minimumStability, bool $verbose): array
     {
         $links = [];
 
-        foreach ($repos as $repo) {
-            // collect links for composer repos with providers
-            if ($repo instanceof ComposerRepository && $repo->hasProviders()) {
-                foreach ($repo->getProviderNames() as $name) {
-                    $links[] = new Link('__root__', $name, new EmptyConstraint(), 'requires', '*');
+        foreach ($repositories as $repository) {
+            if ($repository instanceof ComposerRepository) {
+                foreach ($repository->getPackageNames() as $name) {
+                    $links[] = new Link('__root__', $name, new MatchAllConstraint(), 'requires', '*');
                 }
-            } else {
-                $packages = $this->getPackages($repo);
 
-                foreach ($packages as $package) {
-                    // skip aliases
-                    if ($package instanceof AliasPackage) {
-                        continue;
+                continue;
+            }
+
+            $packages = $this->getPackages($repository);
+
+            foreach ($packages as $package) {
+                if ($package instanceof AliasPackage) {
+                    continue;
+                }
+
+                if (BasePackage::$stabilities[$package->getStability()] > BasePackage::$stabilities[$minimumStability]) {
+                    if ($verbose) {
+                        $this->output->writeln('Skipped ' . $package->getPrettyName() . ' (' . $package->getStability() . ')');
                     }
 
-                    if (BasePackage::$stabilities[$package->getStability()] > BasePackage::$stabilities[$minimumStability]) {
-                        if ($verbose) {
-                            $this->output->writeln('Skipped ' . $package->getPrettyName() . ' (' . $package->getStability() . ')');
-                        }
-                        continue;
-                    }
-
-                    $links[] = $package;
+                    continue;
                 }
+
+                $links[] = $package;
             }
         }
 
@@ -593,64 +687,34 @@ class PackageSelection
     }
 
     /**
-     * Add the linked packages to the selection
-     *
-     * @param Pool  $pool
-     *  Pool used to search for linked packages
-     * @param Link[]|PackageInterface[]  $links
-     *  Array of links or packages
-     * @param bool $isRoot
-     *  If the packages are linked in root or as dependency
-     * @param bool $verbose
-     *  Output informations if true
+     * @param Link[]|PackageInterface[] $links
      *
      * @return Link[]
      */
-    private function selectLinks(Pool $pool, $links, bool $isRoot, bool $verbose)
+    private function selectLinks(RepositorySet $repositorySet, array $links, bool $isRoot, bool $verbose): array
     {
         $depsLinks = $isRoot ? [] : $links;
 
-        $policies = [
-            new DefaultPolicy(true, false),
-            new DefaultPolicy(false, false),
-            new DefaultPolicy(true, true),
-            new DefaultPolicy(false, true),
-        ];
-
         reset($links);
+
         while (null !== key($links)) {
             $link = current($links);
-
+            $matches = [];
             if (is_a($link, PackageInterface::class)) {
                 $matches = [$link];
             } elseif (is_a($link, Link::class)) {
                 $name = $link->getTarget();
                 if (!$isRoot && $this->onlyBestCandidates) {
-                    $selector = new VersionSelector($pool);
-                    $matches = [$selector->findBestCandidate($name, $link->getConstraint()->getPrettyString())];
-                }
-                else {
-                    $matches = $pool->whatProvides($name, $link->getConstraint(), true);
+                    $selector = new VersionSelector($repositorySet);
+                    $match = $selector->findBestCandidate($name, $link->getConstraint()->getPrettyString());
+                    $matches = $match ? [$match] : [];
+                } else {
+                    $matches = $repositorySet->createPoolForPackage($link->getTarget())->whatProvides($name, $link->getConstraint());
                 }
 
                 if (0 === \count($matches)) {
                     $this->output->writeln('<error>The ' . $name . ' ' . $link->getPrettyConstraint() . ' requirement did not match any package</error>');
                 }
-            }
-
-            if (!$isRoot && $this->requireDependencyFilter && \count($matches) > 1) {
-                // filter matches like Composer's installer
-                \array_walk($matches, function (&$package) {
-                    $package = $package->getId();
-                });
-                $m = [];
-                foreach ($policies as $policy) {
-                    $pm = $policy->selectPreferredPackages($pool, [], $matches);
-                    if (isset($pm[0])) {
-                        $m[] = $pool->packageById($pm[0]);
-                    }
-                }
-                $matches = $m;
             }
 
             foreach ($matches as $package) {
@@ -660,11 +724,28 @@ class PackageSelection
                 }
 
                 $uniqueName = $package->getUniqueName();
+                $prettyVersion = $package->getPrettyVersion();
+
+                if (!is_string($prettyVersion)) {
+                    $this->output->writeln('<notice>Skipping ' . $package->getPrettyName() . ' (' . $prettyVersion . ') due to invalid version type</notice>');
+
+                    continue;
+                }
+
+                // Check if + character is present, only once according to Semver;
+                // otherwise metadata will stripped as usual
+                if (1 === substr_count($prettyVersion, '+')) {
+                    // re-inject metadata because it has been stripped by the VersionParser
+                    if (preg_match('/.+(\+[0-9A-Za-z-]*)$/', $prettyVersion, $match)) {
+                        $uniqueName .= $match[1];
+                    }
+                }
+
                 // add matching package if not yet selected
                 if (!isset($this->selected[$uniqueName])) {
-                    if (false === $isRoot || $this->onlyDependencies === false) {
+                    if (false === $isRoot || false === $this->onlyDependencies) {
                         if ($verbose) {
-                            $this->output->writeln('Selected ' . $package->getPrettyName() . ' (' . $package->getPrettyVersion() . ')');
+                            $this->output->writeln('Selected ' . $package->getPrettyName() . ' (' . $prettyVersion . ')');
                         }
                         $this->selected[$uniqueName] = $package;
                     }
@@ -694,65 +775,54 @@ class PackageSelection
     }
 
     /**
-     * Create the additional repositories
-     *
      * @return RepositoryInterface[]
      */
-    private function getDepRepos(Composer $composer)
+    private function getDepRepos(Composer $composer): array
     {
-        $depRepos = [];
+        $repositories = [];
+
         if (\is_array($this->depRepositories)) {
-            $rm = $composer->getRepositoryManager();
-            foreach ($this->depRepositories as $index => $repoConfig) {
-                $name = \is_int($index) && isset($repoConfig['url']) ? $repoConfig['url'] : $index;
-                $type = $repoConfig['type'] ?? '';
-                $depRepos[$index] = $rm->createRepository($type, $repoConfig, $name);
+            $repositoryManager = $composer->getRepositoryManager();
+
+            foreach ($this->depRepositories as $index => $config) {
+                $name = \is_int($index) && isset($config['url']) ? $config['url'] : $index;
+                $type = $config['type'] ?? '';
+                $repositories[$index] = $repositoryManager->createRepository($type, $config, $name);
             }
         }
 
-        return $depRepos;
+        return $repositories;
     }
 
     /**
-     * Gets All or filtered Packages of a Repository.
-     *
-     * @param RepositoryInterface $repo a Repository
-     *
      * @return PackageInterface[]
      */
-    private function getPackages(RepositoryInterface $repo)
+    private function getPackages(RepositoryInterface $repo): array
     {
         $packages = [];
 
-        if ($this->hasFilterForPackages()) {
-            // apply package filter if defined
-            foreach ($this->packagesFilter as $filter) {
-                $packages += $repo->findPackages($filter);
-            }
-        } else {
-            // process other repos directly
-            $packages = $repo->getPackages();
+        if (!$this->hasFilterForPackages()) {
+            return $repo->getPackages();
+        }
+
+        foreach ($this->packagesFilter as $filter) {
+            $packages += $repo->findPackages($filter);
         }
 
         return $packages;
     }
 
     /**
-     * Gets the required Links if needed.
-     *
-     * @param PackageInterface $package A package
-     * @param bool $isRoot
-     *  If the packages are linked in root or as dependency
-     *
      * @return Link[]
      */
-    private function getRequired(PackageInterface $package, bool $isRoot)
+    private function getRequired(PackageInterface $package, bool $isRoot): array
     {
         $required = [];
 
         if ($this->requireDependencies) {
             $required = $package->getRequires();
         }
+
         if (($isRoot || !$this->requireDependencyFilter) && $this->requireDevDependencies) {
             $required = array_merge($required, $package->getDevRequires());
         }
@@ -761,51 +831,55 @@ class PackageSelection
     }
 
     /**
-     * Filter given repositories.
+     * @param RepositoryInterface[]|ConfigurableRepositoryInterface[] $repositories
      *
-     * @param RepositoryInterface[] $repositories
-     *
-     * @return RepositoryInterface[]
+     * @return RepositoryInterface[]|ConfigurableRepositoryInterface[]
      */
-    private function filterRepositories(array $repositories)
+    private function filterRepositories(array $repositories): array
     {
-        $url = $this->repositoryFilter;
+        return array_filter(
+            $repositories,
+            function ($repository) {
+                if (!($repository instanceof ConfigurableRepositoryInterface)) {
+                    return false;
+                }
 
-        return array_filter($repositories, function ($repository) use ($url) {
-            if (!($repository instanceof ConfigurableRepositoryInterface)) {
-                return false;
+                $config = $repository->getRepoConfig();
+
+                if (!isset($config['url'])) {
+                    return false;
+                }
+
+                return in_array($config['url'], $this->repositoriesFilter, true);
             }
-
-            $config = $repository->getRepoConfig();
-
-            if (!isset($config['url']) || $config['url'] !== $url) {
-                return false;
-            }
-
-            return true;
-        });
+        );
     }
 
     /**
-     * Filter given repositories.
+     * @param RepositoryInterface[]|ConfigurableRepositoryInterface[] $repositories
      *
-     * @param RepositoryInterface[] $repositories
-     *
-     * @return RepositoryInterface[]
+     * @return RepositoryInterface[]|ConfigurableRepositoryInterface[]
      */
-    private function filterPackages(array $repositories)
+    private function filterPackages(array $repositories): array
     {
-        $package = $this->packagesFilter;
-        return array_filter($repositories, function ($repository) use ($package) {
-            if (!($repository instanceof ConfigurableRepositoryInterface)) {
-                return false;
-            }
-            $config = $repository->getRepoConfig();
+        $packages = $this->packagesFilter;
 
-            if (!isset($config['name']) || $config['name'] !== $package[0]) {
-                return false;
+        return array_filter(
+            $repositories,
+            static function ($repository) use ($packages) {
+                if (!($repository instanceof ConfigurableRepositoryInterface)) {
+                    return false;
+                }
+
+                $config = $repository->getRepoConfig();
+
+                // We need name to be set on repo config as it would otherwise be too slow on remote repos (VCS, ..)
+                if (!isset($config['name']) || !in_array($config['name'], $packages)) {
+                    return false;
+                }
+
+                return true;
             }
-            return true;
-        });
+        );
     }
 }

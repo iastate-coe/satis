@@ -76,7 +76,7 @@ temporary solution.
 
 You can tell Satis to selectively update only particular packages or process
 only a repository with a given URL. This cuts down the time it takes to rebuild
-the `package.json` file and is helpful if you use (custom) webhooks to trigger
+the `packages.json` file and is helpful if you use (custom) webhooks to trigger
 rebuilds whenever code is pushed into one of your repositories.
 
 To rebuild only particular packages, pass the package names on the command line
@@ -324,9 +324,14 @@ is set to true.
    [archive](#downloads) instead. See docs on [config schema] for more details.
  * `notify-batch`: optional, specify a URL that will be called every time a
    user installs a package. See [notify-batch].
+ * `include-types`: optional, an array of [composer types]. When provided 
+   only packages with this type will be selected by Satis. 
+ * `exclude-types`: optional, an array of [composer types]. Any packages 
+   with a type in this array will not be selected by Satis. 
 
 [ssh2 context options]: https://secure.php.net/manual/en/wrappers.ssh2.php#refsect1-wrappers.ssh2-options
 [ssl context options]: https://secure.php.net/manual/en/context.ssl.php
 [Twig]: https://twig.sensiolabs.org/
 [config schema]: https://getcomposer.org/doc/04-schema.md#config
 [notify-batch]: https://getcomposer.org/doc/05-repositories.md#notify-batch
+[composer types]: https://getcomposer.org/doc/04-schema.md#type

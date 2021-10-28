@@ -2,13 +2,12 @@
 
 Simple static Composer repository generator.
 
-[![Build Status](https://travis-ci.org/composer/satis.svg?branch=master)](https://travis-ci.org/composer/satis)
-[![codecov](https://codecov.io/gh/composer/satis/branch/master/graph/badge.svg)](https://codecov.io/gh/composer/satis)
-
 
 ## Run from source
 
-- Install satis: `composer create-project composer/satis:dev-master`
+Satis requires a recent PHP version, it does not run with unsupported PHP versions. Check the `composer.json` file for details.
+
+- Install satis: `composer create-project composer/satis:dev-main`
 - Build a repository: `php bin/satis build <configuration-file> <output-directory>`
 
 Read the more detailed instructions in the [documentation][].
@@ -68,6 +67,8 @@ By participating in this project you agree to abide by its terms.
 
 Fork the project, create a feature branch, and send us a pull request.
 
+If you introduce a new feature, or fix a bug, please try to include a testcase.
+
 
 ## Authors
 
@@ -76,17 +77,14 @@ See the list of [contributors][] who participate(d) in this project.
 
 ## Community Tools
 
-- [satis-go][] - A simple web server for managing Satis configuration and
-    hosting the generated Composer repository.
 - [satisfy][] - Symfony based composer repository manager with a simple web UI.
-- [satis-control-panel][] - Simple web UI for managing your Satis Repository
-    with optional CI integration.
-- [composer-satis-builder][] - Simple tool for updating the Satis configuration
-    (satis.json) "require" key on the basis of the project composer.json.
+
 
 ## Examples
 
 - [eventum/composer] - A simple static set of packages hosted in GitHub Pages
+- [satis.spatie.be] - A brief guide to setting up and securing a Satis repository
+
 
 ## License
 
@@ -94,11 +92,9 @@ Satis is licensed under the MIT License - see the [LICENSE][] file for details
 
 
 [documentation]: https://getcomposer.org/doc/articles/handling-private-packages-with-satis.md
-[Contributor Code of Conduct]: http://contributor-covenant.org/version/1/4/
+[Contributor Code of Conduct]: https://www.contributor-covenant.org/version/2/0/code_of_conduct/
 [contributors]: https://github.com/composer/satis/contributors
-[satis-go]: https://github.com/benschw/satis-go
 [satisfy]: https://github.com/ludofleury/satisfy
-[satis-control-panel]: https://github.com/realshadow/satis-control-panel
-[composer-satis-builder]: https://github.com/AOEpeople/composer-satis-builder
 [LICENSE]: https://github.com/composer/satis/blob/master/LICENSE
 [eventum/composer]: https://github.com/eventum/composer
+[satis.spatie.be]: https://alexvanderbist.com/2021/setting-up-and-securing-a-private-composer-repository/
