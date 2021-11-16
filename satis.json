@@ -3,26 +3,36 @@
     "homepage": "https://html.engineering.iastate.edu/composer/",
     "repositories": [
         {
-            "type": "vcs",
-            "url": "ssh://git@git.its.iastate.edu:7999/iastate-theme/php.git"
+            "url": "ssh://git@git.its.iastate.edu:7999/engr-web/iastate-theme-php.git",
+            "type": "vcs"
         },
         {
-            "type": "vcs",
-            "url": "ssh://git@git.its.iastate.edu:7999/engr-web/iastate-theme-twig-bundle.git"
+            "url": "ssh://git@git.its.iastate.edu:7999/iastate-theme/sass.git",
+            "type": "vcs"
         },
         {
-            "type": "vcs",
-            "url": "ssh://git@git.its.iastate.edu:7999/engr-web/isu-semester-guesser.git"
+            "url": "ssh://git@git.its.iastate.edu:7999/engr-web/iastate-theme-twig-bundle.git",
+            "type": "vcs"
         },
         {
-            "type": "vcs",
-            "url": "ssh://git@git.its.iastate.edu:7999/engr-web/iastateaccountbundle.git"
+            "url": "ssh://git@git.its.iastate.edu:7999/engr-web/iastate-semester.git",
+            "type": "vcs"
+        },
+        {
+            "url": "ssh://git@git.its.iastate.edu:7999/engr-web/iastate-account-bundle.git",
+            "type": "vcs"
+        },
+        {
+            "url": "ssh://git@git.its.iastate.edu:7999/engr-web/iastate-theme-symfony.git",
+            "type": "vcs"
         }
     ],
     "require": {
-        "iastate-theme/php": ">v2.0.0",
+        "iastate-theme/php": ">2.0.0",
+        "iastate-theme/sass": "*",
         "iastate-theme/twig-bundle": ">0.1",
-        "kwickham/isu-semester-guesser": ">=1",
+        "iastate-theme/symfony": "*",
+        "iastate/semester": ">=1",
         "iastate/account-bundle": ">=1"
     },
     "require-all": false
